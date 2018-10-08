@@ -7,27 +7,25 @@ import (
 // PushStack holds the processing and state information
 // of a PushStack.
 type PushStack struct {
-	worker           PushStackWorker
+	worker           func(interface{})
 	concurrency      int
 	availableWorkers int
 	height           int
-	items            []StackItem
+	items            []interface{}
 	started          bool
 	draining         bool
 	overload         int
-	onOverload       func(StackItem)
-	onFirstOverload  func(StackItem)
+	onOverload       func(interface{})
+	onFirstOverload  func(interface{})
 	onDrained        func()
 	mutex            sync.Mutex
 }
-
-type StackItem interface{}
 
 // PushStackPut provides an interface that can be passed
 // to clients to work with the stack. It contains only the
 // methods required by a client.
 type PushStackPut interface {
-	Push(StackItem)
+	Push(interface{})
 	Height() int
 	Count() int
 	IsStarted() bool
@@ -36,16 +34,12 @@ type PushStackPut interface {
 // compile-time check that interface is satisfied
 var _ PushStackPut = (*PushStack)(nil)
 
-// PushStackWorker defines the function that will be called
-// to process a stack item.
-type PushStackWorker func(item StackItem)
-
 // NewPushStack creates a new PushStack with the given concurrency,
 // height and worker. The worker is the function that will be called
 // to process a stack item. The concurrency is the number of times the
 // worker function will be called in parallel. The height is the
 // maximum capacity of the stack.
-func NewPushStack(concurrency int, height int, worker PushStackWorker) *PushStack {
+func NewPushStack(concurrency int, height int, worker func(interface{})) *PushStack {
 	if concurrency < 1 {
 		panic("concurrency must greater than 0")
 	}
@@ -57,7 +51,7 @@ func NewPushStack(concurrency int, height int, worker PushStackWorker) *PushStac
 		concurrency:      concurrency,
 		availableWorkers: concurrency,
 		height:           height,
-		items:            make([]StackItem, 0, height),
+		items:            make([]interface{}, 0, height),
 		worker:           worker}
 
 	return s
@@ -72,6 +66,7 @@ func (s *PushStack) Start() {
 	s.started = true
 	s.draining = false
 	s.overload = 0
+	go s.pop()
 }
 
 // IsStarted indicates whether the stack is started. This method
@@ -97,6 +92,7 @@ func (s *PushStack) Drain() {
 		// already drained
 		s.setDrained()
 	}
+	go s.pop()
 }
 
 // OnDrained sets an event handler that will be called when
@@ -110,7 +106,7 @@ func (s *PushStack) OnDrained(f func()) {
 // stack.
 func (s *PushStack) Empty() {
 	s.mutex.Lock()
-	s.items = make([]StackItem, 0, s.Height())
+	s.items = make([]interface{}, 0, s.Height())
 	s.mutex.Unlock()
 }
 
@@ -140,13 +136,13 @@ func (s *PushStack) Overload() int {
 // OnOverload sets an event handler that will be called *every
 // time* a client attempts to overload the stack. The handler
 // is passed the value of the Overload register.
-func (s *PushStack) OnOverload(f func(StackItem)) {
+func (s *PushStack) OnOverload(f func(interface{})) {
 	s.onOverload = f
 }
 
 // OnFirstOverload sets an event handler that will be called the first
 // time a client attempts to overload the stack.
-func (s *PushStack) OnFirstOverload(f func(StackItem)) {
+func (s *PushStack) OnFirstOverload(f func(interface{})) {
 	s.onFirstOverload = f
 }
 
@@ -156,7 +152,7 @@ func (s *PushStack) OnFirstOverload(f func(StackItem)) {
 // on the floor. The dropped item is sent to the OnOverload
 // and OnFirstOverload (if this is the first time) event
 // handlers.
-func (s *PushStack) Push(item StackItem) {
+func (s *PushStack) Push(item interface{}) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
@@ -212,7 +208,7 @@ func (s *PushStack) pop() {
 	}
 }
 
-func (s *PushStack) doWork(item StackItem) {
+func (s *PushStack) doWork(item interface{}) {
 	done := make(chan bool)
 	go func() {
 		s.worker(item)
